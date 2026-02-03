@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Nov  4 14:53:47 2025
+
+@author: apple
+"""
+
+import cv2
+import os
+import glob
+import numpy as np
+from pathlib import Path
+import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
+import pyfiglet
+import tkinter as tk
+import matplotlib.image as mpimg
+import pickle 
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+
+from PIL import Image
+import os
+
+#================================= NO NO NO ============================
+
+# === Configuration ===
+input_folder = r'/Users/apple/Desktop/G12/Computer/Data_Set(240)/Train(120)/Train(60)/No(30)'          # Folder containing your 30 original images
+output_large = r'/Users/apple/Desktop/G12/Computer/Data_Set(240)/Train(120)/Train(60)/No(30)/Large'     # Folder for large images
+output_small = r'/Users/apple/Desktop/G12/Computer/Data_Set(240)/Train(120)/Train(60)/No(30)/Small'    # Folder for small images
+
+
+# === Create output folders if they don't exist ===
+# os.makedirs(output_large, exist_ok=True)
+# os.makedirs(output_small, exist_ok=True)
+
+# # === Loop through all image files ===
+# for filename in os.listdir(input_folder):
+#     if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.heic', '.heif')):
+#         filepath = os.path.join(input_folder, filename)
+        
+#         with Image.open(filepath) as img:
+#             width, height = img.size
+            
+#             # Calculate new sizes
+#             large_size = (int(width * 1.25), int(height * 1.25))   # 20% larger
+#             small_size = (int(width * 0.75), int(height * 0.75)) # 25% smaller
+            
+#             # Create and save large version
+#             large_img = img.copy().resize(large_size, Image.Resampling.LANCZOS)
+#             large_img.save(os.path.join(output_large, os.path.splitext(filename)[0] + ".jpg"), quality=95)
+            
+#             # Create and save small version
+#             small_img = img.copy().resize(small_size, Image.Resampling.LANCZOS)
+#             small_img.save(os.path.join(output_small, os.path.splitext(filename)[0] + ".jpg"), quality=90)
+            
+#         print(f"Processed {filename}")
+
+# print("✅ All images resized (large ×1.25, small ×0.75) successfully!")
+
+# ================================= YES YES YES ============================
+
+# === Configuration ===
+input_folder = r'/Users/apple/Desktop/G12/Computer/Data_Set(240)/Train(120)/Train(60)/Yes(30)'          # Folder containing your 30 original images
+output_large = r'/Users/apple/Desktop/G12/Computer/Data_Set(240)/Train(120)/Train(60)/Yes(30)/Large'     # Folder for large images
+output_small = r'/Users/apple/Desktop/G12/Computer/Data_Set(240)/Train(120)/Train(60)/Yes(30)/Small'    # Folder for small images
+
+
+# === Create output folders if they don't exist ===
+# os.makedirs(output_large, exist_ok=True)
+# os.makedirs(output_small, exist_ok=True)
+
+# # === Loop through all image files ===
+# for filename in os.listdir(input_folder):
+#     if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.heic', '.heif')):
+#         filepath = os.path.join(input_folder, filename)
+        
+#         with Image.open(filepath) as img:
+#             width, height = img.size
+            
+#             # Calculate new sizes
+#             large_size = (int(width * 1.25), int(height * 1.25))   # 20% larger
+#             small_size = (int(width * 0.75), int(height * 0.75)) # 25% smaller
+            
+#             # Create and save large version
+#             large_img = img.copy().resize(large_size, Image.Resampling.LANCZOS)
+#             large_img.save(os.path.join(output_large, os.path.splitext(filename)[0] + ".jpg"), quality=95)
+            
+#             # Create and save small version
+#             small_img = img.copy().resize(small_size, Image.Resampling.LANCZOS)
+#             small_img.save(os.path.join(output_small, os.path.splitext(filename)[0] + ".jpg"), quality=90)
+            
+#         print(f"Processed {filename}")
+
+# print("✅ All images resized (large ×1.25, small ×0.75) successfully!")
+
+
+# ========================================== convulution (validation yes) =================================#
+
+def load_images_from_folder(folder, exts=(".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")):
+    folder = Path(folder)
+    paths = sorted([p for p in folder.iterdir() if p.suffix.lower() in exts])
+    imgs, ok_paths = [], []
+    for p in paths:
+        img = cv2.imread(str(p), cv2.IMREAD_COLOR)  # BGR
+        if img is not None:
+            imgs.append(img)
+            ok_paths.append(str(p))
+    return imgs, ok_paths
+
+
+def match_color_template(image_bgr, templ_bgr, method=cv2.TM_CCOEFF_NORMED):
+    """
+    Try multi-channel matchTemplate directly (OpenCV supports this in many builds).
+    If not supported in your build, fall back to per-channel TM_CCORR_NORMED averaged.
+    Returns the max response (float).
+    """
+    try:
+        # Direct color matching
+        res = cv2.matchTemplate(image_bgr, templ_bgr, method)
+        return float(res.max())
+    except cv2.error:
+        # Fallback: per-channel normalized correlation and average
+        # (Use CCORR_NORMED: [0,1], higher is better)
+        scores = []
+        for c in range(3):
+            res_c = cv2.matchTemplate(image_bgr[..., c], templ_bgr[..., c], cv2.TM_CCORR_NORMED)
+            scores.append(res_c.max())
+        return float(np.mean(scores))
+
+
+
+def build_color_tm_descriptors(
+    images_folder,
+    templates_folder,
+    scales=(1.0, 0.75, 0.5),   # scale templates (down) to match various object sizes
+    min_template_size=3,        # skip if scaled template becomes smaller than this
+    method=cv2.TM_CCOEFF_NORMED # or cv2.TM_CCORR_NORMED
+):
+    """
+    Returns:
+        X: (N_images, N_templates) descriptor matrix (float32)
+        image_paths: list of dataset image paths
+        template_paths: list of template image paths
+    """
+    # Load dataset images and templates (BGR)
+    dataset_imgs, image_paths = load_images_from_folder(images_folder)
+    templ_imgs, template_paths = load_images_from_folder(templates_folder)
+
+    if len(templ_imgs) == 0:
+        raise ValueError("No templates found.")
+    if len(dataset_imgs) == 0:
+        raise ValueError("No dataset images found.")
+
+    N = len(dataset_imgs)
+    M = len(templ_imgs)
+    X = np.zeros((N, M), dtype=np.float32)
+
+    for i, img in enumerate(dataset_imgs):
+        H, W = img.shape[:2]
+        for j, templ in enumerate(templ_imgs):
+            best = -1.0  # for TM_CCOEFF_NORMED range ~[-1, 1]; adjust if using CCORR_NORMED
+            th, tw = templ.shape[:2]
+
+            # Try multiple scales (downscale template only)
+            for s in scales:
+                sw = max(int(round(tw * s)), 1)
+                sh = max(int(round(th * s)), 1)
+                if sw < min_template_size or sh < min_template_size:
+                    continue
+
+                # Resize template
+                scaled_t = cv2.resize(templ, (sw, sh), interpolation=cv2.INTER_AREA)
+
+                # Template must fit inside the image
+                if sh > H or sw > W:
+                    continue
+
+                score = match_color_template(img, scaled_t, method=method)
+                if score > best:
+                    best = score
+
+            # If no scale fit, skip (leave as 0)
+            if best == -1.0:
+                best = 0.0
+
+            X[i, j] = best
+
+        print(f"[{i+1}/{N}] done -> best scores shape per image: ({M},)")
+
+    return X, image_paths, template_paths
+
+
+images_folder=r'/Users/apple/Desktop/Data_Set(240)/Train(120)/Validate(60)/Yes(30)'
+templates_folder=r'/Users/apple/Desktop/Data_Set(240)/Train(120)/Train(60)/Yes(90)'
+X, img_paths, tmpl_paths = build_color_tm_descriptors(images_folder, templates_folder, scales=(1.0, 0.75, 0.5), method=cv2.TM_CCOEFF_NORMED)
+np.save("X_yes.npy", X)
+
+
+X_loaded_yes=np.load('/Users/apple/Desktop/G12/Computer/X_yes.npy')
+
+
+
+
+
+#========================================== convulution (validation no) =================================#
+
+def load_images_from_folder(folder, exts=(".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")):
+    folder = Path(folder)
+    paths = sorted([p for p in folder.iterdir() if p.suffix.lower() in exts])
+    imgs, ok_paths = [], []
+    for p in paths:
+        img = cv2.imread(str(p), cv2.IMREAD_COLOR)  # BGR
+        if img is not None:
+            imgs.append(img)
+            ok_paths.append(str(p))
+    return imgs, ok_paths
+
+
+def match_color_template(image_bgr, templ_bgr, method=cv2.TM_CCOEFF_NORMED):
+    """
+    Try multi-channel matchTemplate directly (OpenCV supports this in many builds).
+    If not supported in your build, fall back to per-channel TM_CCORR_NORMED averaged.
+    Returns the max response (float).
+    """
+    try:
+        # Direct color matching
+        res = cv2.matchTemplate(image_bgr, templ_bgr, method)
+        return float(res.max())
+    except cv2.error:
+        # Fallback: per-channel normalized correlation and average
+        # (Use CCORR_NORMED: [0,1], higher is better)
+        scores = []
+        for c in range(3):
+            res_c = cv2.matchTemplate(image_bgr[..., c], templ_bgr[..., c], cv2.TM_CCORR_NORMED)
+            scores.append(res_c.max())
+        return float(np.mean(scores))
+
+
+
+def build_color_tm_descriptors(
+    images_folder,
+    templates_folder,
+    scales=(1.0, 0.75, 0.5),   # scale templates (down) to match various object sizes
+    min_template_size=3,        # skip if scaled template becomes smaller than this
+    method=cv2.TM_CCOEFF_NORMED # or cv2.TM_CCORR_NORMED
+):
+    """
+    Returns:
+        X: (N_images, N_templates) descriptor matrix (float32)
+        image_paths: list of dataset image paths
+        template_paths: list of template image paths
+    """
+    # Load dataset images and templates (BGR)
+    dataset_imgs, image_paths = load_images_from_folder(images_folder)
+    templ_imgs, template_paths = load_images_from_folder(templates_folder)
+
+    if len(templ_imgs) == 0:
+        raise ValueError("No templates found.")
+    if len(dataset_imgs) == 0:
+        raise ValueError("No dataset images found.")
+
+    N = len(dataset_imgs)
+    M = len(templ_imgs)
+    X = np.zeros((N, M), dtype=np.float32)
+
+    for i, img in enumerate(dataset_imgs):
+        H, W = img.shape[:2]
+        for j, templ in enumerate(templ_imgs):
+            best = -1.0  # for TM_CCOEFF_NORMED range ~[-1, 1]; adjust if using CCORR_NORMED
+            th, tw = templ.shape[:2]
+
+            # Try multiple scales (downscale template only)
+            for s in scales:
+                sw = max(int(round(tw * s)), 1)
+                sh = max(int(round(th * s)), 1)
+                if sw < min_template_size or sh < min_template_size:
+                    continue
+
+                # Resize template
+                scaled_t = cv2.resize(templ, (sw, sh), interpolation=cv2.INTER_AREA)
+
+                # Template must fit inside the image
+                if sh > H or sw > W:
+                    continue
+
+                score = match_color_template(img, scaled_t, method=method)
+                if score > best:
+                    best = score
+
+            # If no scale fit, skip (leave as 0)
+            if best == -1.0:
+                best = 0.0
+
+            X[i, j] = best
+
+        print(f"[{i+1}/{N}] done -> best scores shape per image: ({M},)")
+
+    return X, image_paths, template_paths
+
+
+# images_folder=r'/Users/apple/Desktop/Data_Set(240)/Train(120)/Validate(60)/No(30)'
+# templates_folder=r'/Users/apple/Desktop/Data_Set(240)/Train(120)/Train(60)/Yes(90)'
+# X, img_paths, tmpl_paths = build_color_tm_descriptors(images_folder, templates_folder, scales=(1.0, 0.75, 0.5), method=cv2.TM_CCOEFF_NORMED)
+
+# np.save("X_No.npy", X)
+
+
+X_loaded=np.load('/Users/apple/Desktop/G12/Computer/X_No.npy')
+
+#===================================== BIG X and Labels ==============================#
+
+
+label_yes = [1] * 30
+label_no = [0] * 30
+
+label_train = label_yes + label_no
+
+
+# #--------------
+
+
+X_loaded_yes=np.load('/Users/apple/Desktop/G12/Computer/X_yes.npy')
+X_loaded_no=np.load('/Users/apple/Desktop/G12/Computer/X_No.npy')
+
+
+X_train = np.concatenate([X_loaded_yes, X_loaded_no], axis=0)
+
+
+
+######======================================================================
+######======================================================================
+
+#                                   TEST
+
+######======================================================================
+######======================================================================
+
+
+images_folder=r'/Users/apple/Desktop/Data_Set(240)/Test(120)/Yes(60)'
+# templates_folder=r'/Users/apple/Desktop/Data_Set(240)/Train(120)/Train(60)/Yes(90)'
+# X, img_paths, tmpl_paths = build_color_tm_descriptors(images_folder, templates_folder, scales=(1.0, 0.75, 0.5), method=cv2.TM_CCOEFF_NORMED)
+# np.save("X_yes_test.npy", X)
+
+
+X_loaded_yes_test = np.load('/Users/apple/Desktop/G12/Computer/X_yes_test.npy')
+ 
+
+
+
+
+#========================================== convulution (validation no) =================================#
+
+
+
+images_folder=r'/Users/apple/Desktop/Data_Set(240)/Test(120)/No(60)'
+# templates_folder=r'/Users/apple/Desktop/Data_Set(240)/Train(120)/Train(60)/Yes(90)'
+# X, img_paths, tmpl_paths = build_color_tm_descriptors(images_folder, templates_folder, scales=(1.0, 0.75, 0.5), method=cv2.TM_CCOEFF_NORMED)
+
+# np.save("X_No_test.npy", X)
+
+
+X_loaded_no_test=np.load('/Users/apple/Desktop/G12/Computer/X_No_test.npy')
+
+#===================================== BIG X and Labels ==============================#
+
+
+label_yes_test = [1] * 60
+label_no_test = [0] * 60
+
+label_test = label_yes_test + label_no_test
+
+
+# #--------------
+
+
+X_loaded_yes_test=np.load('/Users/apple/Desktop/G12/Computer/X_yes_test.npy')
+X_loaded_no_test=np.load('/Users/apple/Desktop/G12/Computer/X_No_test.npy')
+
+
+X_test = np.concatenate([X_loaded_yes_test, X_loaded_no_test], axis=0)
+
+
+########
+######-------------------------------------------------------------
+######                     MODEL FIT - SVM
+#######------------------------------------------------------------
+########
+
+from sklearn import svm
+X = X_train
+y = label_train
+
+X_train_2=X_train.tolist()
+
+
+clf = svm.SVC()
+clf.fit(X_train_2, y)
+
+
+
+
+
+predictions=clf.predict(X_test.tolist())
+
+#Usingb label_test and Predictions plot the Confusion matrix
+
+
+# Create confusion matrix
+cm = confusion_matrix(label_test, predictions)
+
+# Plot
+disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+disp.plot()
+
+plt.title("Confusion Matrix")
+plt.show()
